@@ -44,11 +44,16 @@ function render() {
     + '<div contenteditable="true" role="textbox" aria-label="What do you want to create?"></div><button aria-label="Add ingredients to the prompt box">+</button><button aria-label="Agent instructions">a</button><button aria-label="Start generation" onclick="S.generations++;save()">go</button>';
   const main = app.querySelector('#main');
   main.innerHTML = S.view === 'characters'
-    ? '<button id="new">' + icon('add') + 'New character</button>' + S.chars.map(c => '<div class="tile"><span>' + c.name + '</span></div>').join('')
+    ? '<button id="new">' + icon('add') + 'New character</button>' + S.chars.map(c => '<flow-grid-tile-container role="group" aria-label="' + c.name + '" data-id="' + c.id + '"><flow-character-tile><span>' + c.name + '</span></flow-character-tile></flow-grid-tile-container>').join('')
     : S.images.map(i => '<img data-media-id="' + i.id + '" src="' + src(i) + '">').join('');
+  // Like Flow's chat: the agent echoes tags as code, which is not a character.
+  main.insertAdjacentHTML('beforeend', '<flow-markdown-content><p>I saved it as <code>@CHAR-02-DRIVER</code>.</p></flow-markdown-content>');
   app.querySelector('#all').onclick = () => { S.view = 'all'; render(); };
   app.querySelector('#chars').onclick = () => { S.view = 'characters'; render(); };
-  if (S.view === 'characters') app.querySelector('#new').onclick = () => go('/project/p1/character');
+  if (S.view === 'characters') {
+    app.querySelector('#new').onclick = () => go('/project/p1/character');
+    app.querySelectorAll('flow-grid-tile-container').forEach(el => el.onclick = () => go('/project/p1/character/' + el.dataset.id));
+  }
   const clear = app.querySelector('[aria-label="Clear prompt"]'); if (clear) clear.onclick = () => { S.chips = []; render(); };
   app.querySelector('[aria-label="Add ingredients to the prompt box"]').onclick = () => ingredients(null);
 }
@@ -118,10 +123,16 @@ test('a generated character image becomes a named Flow character with a voice; e
   const page = await flowPage(t);
   const flow = new FlowClient(page, () => {});
   let saves = 0; const save = async () => { saves++; };
-  const amit: Item = { status: 'done', tag: '@CHAR-01-AMIT', look_summary: 'man, 25', voice_description: 'Calm adult male' };
+  // Made by hand in Flow without a voice: reused, and given the voice and info it lacks.
+  const amit: Item = { status: 'done', tag: '@CHAR-01-AMIT', look_summary: 'man, 25', voice_description: 'Calm adult male', flow_character: { done: true, existing: true } };
   await flow.ensureCharacter(amit, save);
-  assert.deepEqual((amit.flow_character as any).existing, true);
-  const driver: Item = { status: 'done', tag: '@CHAR-02-DRIVER', look_summary: '55-year-old bus driver, grey moustache', voice_description: 'Older male, gravelly North Indian Hindi', flow_generation: generated('driver') };
+  assert.equal((amit.flow_character as any).existing, true);
+  assert.equal((amit.flow_character as any).voice, 'Iapetus');
+  const reused = (await state(page)).chars.find((c: any) => c.name === '@CHAR-01-AMIT');
+  assert.equal(reused.voice, 'Iapetus');
+  assert.match(reused.info, /Calm adult male/);
+  // A tag mentioned in the chat is not a character: an earlier run wrongly recorded this one as existing.
+  const driver: Item = { status: 'done', tag: '@CHAR-02-DRIVER', look_summary: '55-year-old bus driver, grey moustache', voice_description: 'Older male, gravelly North Indian Hindi', flow_generation: generated('driver'), flow_character: { done: true, existing: true } };
   await flow.ensureCharacter(driver, save);
   let s = await state(page);
   const made = s.chars.find((c: any) => c.name === '@CHAR-02-DRIVER');

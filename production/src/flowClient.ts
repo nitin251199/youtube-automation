@@ -115,30 +115,36 @@ export class FlowClient {
   /** Saves a generated character image as a named Flow character, which the agent cannot do itself. */
   async ensureCharacter(item: Item, save: () => Promise<void>) {
     let record = (item.flow_character ?? {}) as { url?: string; done?: boolean; existing?: boolean; voice?: string };
-    if (record.done) return;
+    if (record.done && record.voice) return;
     const tag = String(item.tag ?? '');
     if (!tag) throw new Error('A character without a tag cannot be saved in Flow.');
     if (!record.url) {
-      const generation = item.flow_generation as GenerationState | undefined;
-      const source = generation?.media_id ? await this.currentSource(generation.media_id) : generation?.source;
-      await this.page.getByRole('button', { name: /Characters$/ }).first().click();
-      const create = this.page.getByRole('button', { name: /New character/ }).first();
-      await create.waitFor({ state: 'visible', timeout: 30000 });
-      await this.settled(this.page.locator('main'));
-      if (await this.page.locator('main').getByText(tag, { exact: true }).count()) {
-        item.flow_character = { done: true, existing: true }; await save();
-        this.log('character_saved', { tag, message: `Using the existing Flow character ${tag}.` });
-        return this.showAllMedia();
+      const openCharacters = async () => {
+        await this.page.getByRole('button', { name: /Characters$/ }).first().click();
+        await this.page.getByRole('button', { name: /New character/ }).first().waitFor({ state: 'visible', timeout: 30000 });
+        await this.settled(this.page.locator('main'));
+      };
+      await openCharacters();
+      // Only a Characters grid tile is a character; Flow's chat also echoes tags as text.
+      const tile = this.page.locator(`main flow-grid-tile-container[aria-label="${tag}"]`).first();
+      if (await tile.count()) {
+        await tile.click();
+        await this.page.waitForURL(/\/character\/[\w-]+$/, { timeout: 60000 });
+        record = { url: this.page.url(), existing: true }; item.flow_character = record; await save();
+      } else {
+        const generation = item.flow_generation as GenerationState | undefined;
+        const source = generation?.media_id ? await this.currentSource(generation.media_id) : generation?.source;
+        if (!source) throw new Error(`Character ${tag} has no generated image in this Flow project to save as a character.`);
+        await openCharacters();
+        await this.page.getByRole('button', { name: /New character/ }).first().click();
+        await this.page.getByRole('button', { name: /Add from project/ }).click();
+        const dialog = this.page.locator('[role=dialog]').last();
+        await (await this.option(dialog, o => mediaKey(o.img) === mediaKey(source), tag)).click();
+        await dialog.getByRole('button', { name: 'Add media', exact: true }).click();
+        await this.page.waitForURL(/\/character\/[\w-]+$/, { timeout: 90000 });
+        // Saved at once so an interrupted save resumes on this entity instead of creating another.
+        record = { url: this.page.url() }; item.flow_character = record; await save();
       }
-      if (!source) throw new Error(`Character ${tag} has no generated image in this Flow project to save as a character.`);
-      await create.click();
-      await this.page.getByRole('button', { name: /Add from project/ }).click();
-      const dialog = this.page.locator('[role=dialog]').last();
-      await (await this.option(dialog, o => mediaKey(o.img) === mediaKey(source), tag)).click();
-      await dialog.getByRole('button', { name: 'Add media', exact: true }).click();
-      await this.page.waitForURL(/\/character\/[\w-]+$/, { timeout: 90000 });
-      // Saved at once so an interrupted save resumes on this entity instead of creating another.
-      record = { url: this.page.url() }; item.flow_character = record; await save();
     } else if (this.page.url() !== record.url) await this.page.goto(record.url, { waitUntil: 'domcontentloaded' });
     const name = this.page.locator(S.characterName);
     await name.waitFor({ state: 'visible', timeout: 60000 });
@@ -161,6 +167,8 @@ export class FlowClient {
       await voices.getByRole('button', { name: 'Add to character' }).click();
       await this.page.locator('button').filter({ hasText: new RegExp(voice, 'i') }).first().waitFor({ state: 'visible', timeout: 15000 });
       record.voice = voice;
+    } else {
+      record.voice = (await this.page.locator('button').filter({ hasText: 'voice_selection' }).first().innerText()).replace('voice_selection', '').trim() || 'set in Flow';
     }
     const info = this.page.locator(S.characterInfo);
     if (!(await info.inputValue()).trim()) {
@@ -172,7 +180,7 @@ export class FlowClient {
     await this.page.getByRole('button', { name: 'Done', exact: true }).click();
     await this.page.waitForURL(url => !/\/character(\/|$)/.test(url.pathname), { timeout: 30000 });
     item.flow_character = { ...record, done: true }; await save();
-    this.log('character_saved', { tag, voice: record.voice, message: `Saved ${tag} as a Flow character${record.voice ? ` with the ${record.voice} voice` : ''}.` });
+    this.log('character_saved', { tag, voice: record.voice, message: `${record.existing ? 'Checked the existing' : 'Saved'} Flow character ${tag} (voice: ${record.voice}).` });
     await this.showAllMedia();
   }
   /** Attaches a scene's saved characters and background image to the prompt; anything missing stops before submission. */
