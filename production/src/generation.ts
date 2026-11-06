@@ -7,8 +7,13 @@ export class FlowGenerationQueuedError extends Error {
   }
 }
 export class FlowGenerationFailedError extends Error {
+  // Flow refuses such a prompt every time, so submitting it unchanged only fails again.
+  readonly promptRejected: boolean;
   constructor(detail: string) {
-    super(`Google Flow could not generate this item ("${detail}"). Its submission was cleared so it can be submitted again.`); this.name = 'FlowGenerationFailedError';
+    const promptRejected = /different prompt/i.test(detail);
+    super(`Google Flow could not generate this item ("${detail}"). Its submission was cleared so it can be submitted again.${promptRejected
+      ? " Flow rejects this prompt each time: change the scene's dialogue or the speaker's voice description in pipeline.json before resuming." : ''}`);
+    this.name = 'FlowGenerationFailedError'; this.promptRejected = promptRejected;
   }
 }
 export interface GenerationState {

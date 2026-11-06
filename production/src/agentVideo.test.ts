@@ -16,7 +16,7 @@ const go = url => { history.pushState({}, '', url); render(); };
 const mp4 = id => 'data:video/mp4;base64,' + btoa('\\u0000\\u0000\\u0000\\u0018ftypisom' + id);
 const message = m => m.role === 'user'
   ? '<div><flow-chat-bubble><flow-structured-prompt-text><span>' + m.text + '</span></flow-structured-prompt-text></flow-chat-bubble></div>'
-  : m.error ? '<div><flow-chat-bubble><flow-error-tile>warning Failed Something went wrong. Please try again.</flow-error-tile></flow-chat-bubble></div>'
+  : m.error ? '<div><flow-chat-bubble><flow-error-tile>warning Failed ' + (m.error === true ? 'Something went wrong. Please try again.' : m.error) + '</flow-error-tile></flow-chat-bubble></div>'
   : '<div><flow-chat-bubble><flow-a2ui-message-renderer><flow-a2ui-video-option><div role="button" aria-label="Open video in editor" data-id="' + m.id + '">' + (m.rendering ? '' : '<img src="https://storage.test/image/' + m.id + '-poster?Signature=x">') + '</div></flow-a2ui-video-option></flow-a2ui-message-renderer>'
     + (m.player ? '<video src="https://flow.test/asb/' + m.id + '=mm,22,15"></video>' : '') + '</flow-chat-bubble></div>';
 function render() {
@@ -51,7 +51,8 @@ function render() {
     setTimeout(() => { const old = S.messages.find(m => m.id); if (old) { old.player = true; render(); } }, 300);
     const reply = S.replies.shift();
     // Like Flow: the reply card appears as a grey placeholder at once and gets its preview when rendering ends.
-    setTimeout(() => { S.busy = false; S.messages.push(reply === 'error' ? { role: 'agent', error: true } : { role: 'agent', id: reply, rendering: true }); render(); }, 600);
+    const failure = { error: true, audio: 'Audio generation failed. Please try a different prompt or send feedback.' }[reply];
+    setTimeout(() => { S.busy = false; S.messages.push(failure ? { role: 'agent', error: failure } : { role: 'agent', id: reply, rendering: true }); render(); }, 600);
     setTimeout(() => { const m = S.messages.find(x => x.id === reply); if (m) { m.rendering = false; render(); } }, 2500);
   };
 }
@@ -98,7 +99,18 @@ test('a Flow error reply fails the scene clearly and clears its submission so it
   const item: Item = { status: 'pending', scene_number: 5 };
   await flow.bind(item, async () => {}, 'video');
   await flow.agentPrompt(PROMPT);
-  await assert.rejects(flow.generate(PROMPT), (error: any) => error instanceof FlowGenerationFailedError && /Something went wrong/.test(error.message));
+  await assert.rejects(flow.generate(PROMPT), (error: any) => error instanceof FlowGenerationFailedError && /Something went wrong/.test(error.message) && !error.promptRejected);
+  assert.equal(item.flow_generation, undefined);
+});
+
+test('a reply asking for a different prompt is marked so the same prompt is not resubmitted', async t => {
+  const page = await flowPage(t, { messages: earlier, replies: ['audio'] });
+  const flow = new FlowClient(page, () => {}); await flow.uiMode(5000);
+  const item: Item = { status: 'pending', scene_number: 5 };
+  await flow.bind(item, async () => {}, 'video');
+  await flow.agentPrompt(PROMPT);
+  await assert.rejects(flow.generate(PROMPT), (error: any) => error instanceof FlowGenerationFailedError && error.promptRejected
+    && /Audio generation failed/.test(error.message) && /dialogue or the speaker's voice description/.test(error.message));
   assert.equal(item.flow_generation, undefined);
 });
 

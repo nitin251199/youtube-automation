@@ -56,8 +56,8 @@ export async function run(flow:FlowClient,page:any,p:Pipeline,file:string,out:st
           },p,file,log);
           break;
         } catch(error) {
-          // Flow answered with an explicit failure, so nothing was produced: one fresh submission, as for any failed item.
-          if(!(error instanceof FlowGenerationFailedError) || attempt>1) throw error;
+          // Flow answered with an explicit failure, so nothing was produced: one fresh submission, unless Flow wants a different prompt.
+          if(!(error instanceof FlowGenerationFailedError) || error.promptRejected || attempt>1) throw error;
           log('retrying',{label:`scene:${s.scene_number}`,message:`Flow could not generate scene ${s.scene_number}; submitting it once more.`});
         }
       }
