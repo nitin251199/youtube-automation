@@ -1,0 +1,13 @@
+{
+  "name": "youtube-automation-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "npm --prefix backend install && npm --prefix frontend install",
+    "dev": "node run.mjs dev",
+    "build": "npm --prefix frontend run build",
+    "start": "node run.mjs start",
+    "test": "npm --prefix backend test",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck"
+  }
+}

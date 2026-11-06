@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadProject, saveProject } from './reviewState.js';
-import { setup, ask, type Config } from './setupConfig.js';
+import { setup, ask, uploadsEnabled, type Config } from './setupConfig.js';
 export async function fingerprint(file: string): Promise<string> {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -61,12 +61,15 @@ export async function decide(projectFile: string, approve: boolean) {
     await saveProject(projectFile, project);
     review = project.review;
   } finally { await lock.close(); await fs.unlink(`${projectFile}.upload.lock`); }
-  return approve ? publishApproved(projectFile) : review;
+  if (!approve || !await uploadsEnabled()) return review;
+  return publishApproved(projectFile);
 }
 export async function promptReview(projectFile: string) {
-  const settings = await setup(false);
   const project = await loadProject(projectFile);
-  console.log(`Review video: ${project.review?.video_path}\nApproval uploads to ${settings.accountId} with ${settings.visibility} visibility.`);
+  const destination = await uploadsEnabled()
+    ? `Approval uploads to ${(await setup(false)).accountId} with ${process.env.YOUTUBE_VISIBILITY?.trim() || 'private'} visibility.`
+    : 'Zernio is not configured: approval is recorded without uploading. Upload later with: npm run review -- upload --project <pipeline.json>';
+  console.log(`Review video: ${project.review?.video_path}\n${destination}`);
   const answer = (await ask('Is this video good enough to upload to YouTube? [yes/no]: ')).toLowerCase();
   if (!['yes', 'y', 'no', 'n'].includes(answer)) throw new Error('No decision recorded. Answer yes or no.');
   console.log(JSON.stringify(await decide(projectFile, ['yes', 'y'].includes(answer)), null, 2));

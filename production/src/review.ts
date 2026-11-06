@@ -14,6 +14,6 @@ if (command === 'request') {
   console.log(await markReviewPending(projectFile, path.resolve(video), arg('--title')));
 } else if (command === 'prompt') await promptReview(projectFile);
 else if (command === 'approve' || command === 'reject') console.log(await decide(projectFile, command === 'approve'));
-else if (command === 'retry') console.log(await publishApproved(projectFile));
+else if (command === 'retry' || command === 'upload') console.log(await publishApproved(projectFile));
 else if (command === 'status') console.log((await loadProject(projectFile)).review);
-else throw new Error('Use request, prompt, approve, reject, retry or status.');
+else throw new Error('Use request, prompt, approve, reject, upload, retry or status.');

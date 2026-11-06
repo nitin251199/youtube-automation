@@ -42,8 +42,8 @@ test('real FFmpeg preserves long narration and produces review-ready branded MP4
   for(const scene of [1,2]) await fs.copyFile(path.join(narration,'narration-0001.wav'),path.join(output,'narration',`narration-${String(scene).padStart(4,'0')}.wav`));
   await exec('ffmpeg',['-v','error','-y','-f','lavfi','-i','sine=frequency=110:duration=3',path.join(output,'background-music.mp3')]);
   await fs.writeFile(path.join(repo,'pipeline.json'),JSON.stringify({project_id:'regression',characters:[],backgrounds:[],idea:{selected:{title:'Resume render'}},scenes:[1,2].map(scene_number=>({scene_number,status:'done',speaker:'NARRATOR',narration_text:'यह कहानी है।'}))}));
-  const result=await exec(process.execPath,['start-video.mjs','--project','pipeline.json','--output-dir','existing output'],{cwd:repo,maxBuffer:8*1024*1024,env:{...process.env,OPENAI_API_KEY:'fake',GROQ_API_KEY:'',ZERNIO_API_KEY:'fake',ZERNIO_YOUTUBE_ACCOUNT_ID:'fake',YOUTUBE_VISIBILITY:'private',CHANNEL_LOGO_PATH:logo,CHANNEL_INTRO_PATH:intro}});
+  const result=await exec(process.execPath,['start-video.mjs','--project','pipeline.json','--output-dir','existing output'],{cwd:repo,maxBuffer:8*1024*1024,env:{...process.env,GROQ_API_KEY:'fake',ZERNIO_API_KEY:'',ZERNIO_YOUTUBE_ACCOUNT_ID:'',YOUTUBE_VISIBILITY:'private',CHANNEL_LOGO_PATH:logo,CHANNEL_INTRO_PATH:intro}});
   assert.match(result.stdout,/video_ready/);assert.match(result.stdout,/All narration already downloaded/);
   const delivery=JSON.parse(await fs.readFile(path.join(output,'delivery.json'),'utf8'));
-  assert.equal(delivery.video_path,path.join(output,'final.mp4'));assert.match(delivery.chat_markdown,/Completed video/);assert.equal(delivery.status,'awaiting_approval');
+  assert.equal(await fs.realpath(delivery.video_path),await fs.realpath(path.join(output,'final.mp4')));assert.match(delivery.chat_markdown,/Completed video/);assert.equal(delivery.status,'awaiting_approval');
 });

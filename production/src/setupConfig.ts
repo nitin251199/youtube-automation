@@ -9,6 +9,12 @@ export async function loadEnvironment() {
   try { process.loadEnvFile(envFile); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
 }
 export interface Config { apiKey: string; accountId: string; visibility: string }
+export const ZERNIO_MISSING = 'Zernio is not configured, so nothing was uploaded. Fill ZERNIO_API_KEY and ZERNIO_YOUTUBE_ACCOUNT_ID in scripting/.env, then upload the approved video.';
+/** Uploading is optional: without Zernio settings, approved videos wait locally for a later upload. */
+export async function uploadsEnabled() {
+  await loadEnvironment();
+  return Boolean(process.env.ZERNIO_API_KEY?.trim() && process.env.ZERNIO_YOUTUBE_ACCOUNT_ID?.trim());
+}
 export async function ask(question: string, secret = false): Promise<string> {
   if (!process.stdin.isTTY) throw new Error('Interactive setup required. Run npm run setup in a terminal.');
   let muted = false;
@@ -22,13 +28,19 @@ export async function setup(assets = true): Promise<Config> {
   const apiKey = process.env.ZERNIO_API_KEY?.trim() ?? '';
   const accountId = process.env.ZERNIO_YOUTUBE_ACCOUNT_ID?.trim() ?? '';
   const visibility = process.env.YOUTUBE_VISIBILITY?.trim() || 'private';
-  if (!apiKey || !accountId) throw new Error('Fill ZERNIO_API_KEY and ZERNIO_YOUTUBE_ACCOUNT_ID in scripting/.env. Copy scripting/.env.example to .env first if needed.');
+  // Only an upload (assets=false) needs Zernio; producing and reviewing a video does not.
+  if (!assets && (!apiKey || !accountId)) throw new Error(ZERNIO_MISSING);
   if (!['public', 'private', 'unlisted'].includes(visibility)) throw new Error('YOUTUBE_VISIBILITY must be public, private or unlisted in scripting/.env.');
   if (assets) {
-    if (!process.env.OPENAI_API_KEY?.trim() && !process.env.GROQ_API_KEY?.trim()) {
-      throw new Error('Add OPENAI_API_KEY or GROQ_API_KEY to scripting/.env.');
+    if (!process.env.GROQ_API_KEY?.trim()) {
+      throw new Error('Add GROQ_API_KEY to scripting/.env.');
     }
     for (const [name, variable] of [['channel-logo', 'CHANNEL_LOGO_PATH'], ['channel-intro.mp4', 'CHANNEL_INTRO_PATH']]) {
+      // A per-video asset is checked in place and never replaces the channel's saved copy.
+      const perVideo = variable.replace('CHANNEL_', 'VIDEO_');
+      if (process.env[perVideo]?.trim()) {
+        try { await fs.access(path.resolve(root, process.env[perVideo]!.trim())); continue; } catch { throw new Error(`${perVideo} points to a missing file.`); }
+      }
       const value = process.env[variable]?.trim();
       const configuredPath = value ? path.resolve(root, value) : undefined;
       const logoExtension = configuredPath && name === 'channel-logo'

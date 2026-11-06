@@ -20,6 +20,9 @@ outputs/
 
 # Dependencies and caches
 node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
 production/node_modules/
 **/__pycache__/
 *.py[cod]
@@ -28,3 +31,6 @@ npm-debug.log*
 
 .chrome-profile/
 .claude/
+
+# macOS
+.DS_Store

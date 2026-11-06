@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { markReviewPending, loadProject, saveProject } from './reviewState.js';
 import { publishApproved, decide } from './upload.js';
+import { uploadsEnabled } from './setupConfig.js';
 const config = { apiKey: 'fake', accountId: 'account', visibility: 'private' };
 async function fixture(t: any) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-test-'));
@@ -50,4 +51,20 @@ test('lost post response blocks resubmission', async t => {
   await assert.rejects(publishApproved(f.project, config, m.http), /Lost response/);
   assert.equal((await loadProject(f.project)).review!.status, 'submitting');
   await assert.rejects(publishApproved(f.project, config, m.http)); assert.equal(m.calls.length, 4);
+});
+test('without Zernio, approval is recorded and nothing is uploaded until settings are added', async t => {
+  const keys = ['ZERNIO_API_KEY', 'ZERNIO_YOUTUBE_ACCOUNT_ID'];
+  const old = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key]; } });
+  Object.assign(process.env, { ZERNIO_API_KEY: '', ZERNIO_YOUTUBE_ACCOUNT_ID: '' });
+  assert.equal(await uploadsEnabled(), false);
+  const f = await fixture(t); const m = mock();
+  const review = await decide(f.project, true);
+  assert.equal(review!.status, 'approved');
+  assert.equal(review!.submission_started_at, undefined);
+  await assert.rejects(publishApproved(f.project), /Zernio is not configured/);
+  assert.equal((await loadProject(f.project)).review!.status, 'approved', 'a refused upload leaves the approval intact');
+  const later = await publishApproved(f.project, config, m.http);
+  assert.equal(later.status, 'submitted');
+  assert.equal(m.calls.length, 4);
 });

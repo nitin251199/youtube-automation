@@ -131,6 +131,69 @@ def validate(project: dict):
         make_prompts(scene, chars, bgs)
 
 
+def planned(project: dict) -> bool:
+    """True once validate() has turned the 12 scenes into Flow prompts."""
+    return len(project["scenes"]) == 12 and all("animation_prompt_NARRATOR_ONLY" in s for s in project["scenes"])
+
+
+def retrying(attempts: int, step):
+    for attempt in range(1, attempts + 1):
+        try:
+            return step()
+        except (ValueError, KeyError, TypeError) as error:
+            if attempt == attempts:
+                raise
+            print(json.dumps({"event": "script_stage_retry", "attempt": attempt, "error": str(error)}, ensure_ascii=False), flush=True)
+
+
+def extract_plan(client: ScriptClient, path: Path, project: dict, progress=None, attempts: int = 1):
+    """Characters, backgrounds and exactly 12 validated scenes from the locked script.
+    Completed stages are skipped so a resumed project keeps its saved Flow state."""
+    progress = progress or (lambda stage, count: None)
+    script = project["script"]["raw_text"]
+    if not project["characters"]:
+        schema = """Return ONLY JSON: {"characters":[{"tag":"@CHAR-01-NAME","name":"...","look_summary":"...","full_prompt":"...","voice_description":"..."}]}.
+All names/roles must come from the locked script. Never include a tag table as a character. Each full_prompt must be a complete 16:9 human-proportioned 2D reference-sheet prompt with exact face, clothes, age, and pose."""
+        def characters():
+            raw = ask(client, render("characters", {"SCRIPT": script}) + "\n" + schema, 3000)
+            return raw, [{**c, "status": "pending", "error": None} for c in json_object(raw)["characters"]]
+        raw, project["characters"] = retrying(attempts, characters)
+        save_stage(path, project, "characters", raw)
+    progress("characters", len(project["characters"]))
+
+    if not project["backgrounds"]:
+        bg_schema = """Return ONLY JSON: {"backgrounds":[{"tag":"#BGD-01-NAME","location_name":"...","look_summary":"...","full_prompt":"..."}]}.
+Every recurring location gets a wide and a close angle as separate tagged plates. All plates must be empty, 16:9, and in the locked 2D style."""
+        def backgrounds():
+            raw = ask(client, render("backgrounds", {"SCRIPT": script}) + "\n" + bg_schema, 3000)
+            return raw, [{**b, "status": "pending", "error": None} for b in json_object(raw)["backgrounds"]]
+        raw, project["backgrounds"] = retrying(attempts, backgrounds)
+        save_stage(path, project, "backgrounds", raw)
+    progress("backgrounds", len(project["backgrounds"]))
+
+    if not planned(project):
+        compact_chars = [{"tag": c["tag"], "name": c["name"], "look_summary": c["look_summary"]} for c in project["characters"]]
+        compact_bgs = [{"tag": b["tag"], "location_name": b["location_name"], "look_summary": b["look_summary"]} for b in project["backgrounds"]]
+        scene_prompt = render("scenes", {"DURATION_MINUTES": 1, "MINIMUM_SCENES": 7, "SCENE_COUNT": 12,
+                                         "SCRIPT": script,
+                                         "CHARACTERS": json.dumps(compact_chars, ensure_ascii=False),
+                                         "BACKGROUNDS": json.dumps(compact_bgs, ensure_ascii=False)})
+        scene_schema = """Return ONLY JSON with {"scenes":[{"scene_number":1,"title":"...","background_tag":"#BGD-01-NAME","character_tags":["@CHAR-01-NAME"],"speaker":"NARRATOR|none|@CHAR-01-NAME","visual_action":"...","camera":"...","effects":"...","sound_design":"...","devanagari_dialogue":"...","narration_text":"..."}]}.
+Exactly 12 scenes in script order. Do not specify, request, or assume a fixed clip length: Flow must choose the natural length needed to complete the action and any dialogue. Use ONLY listed tags. Dialogue must be an exact line from the script; for narration, keep the exact line as metadata for later editing, not in the Flow animation prompt. For every NARRATOR or none scene, narration_text is mandatory: provide one concise Devanagari Hindi narration line consistent with the locked script, never blank. Do not invent character dialogue."""
+        def scenes():
+            raw = ask(client, scene_prompt + "\n" + scene_schema, 6000)
+            project["scenes"] = json_object(raw)["scenes"]
+            save_stage(path, project, "scenes", raw)
+            validate(project)
+            missing_narration = [str(s["scene_number"]) for s in project["scenes"] if s["speaker"] in {"NARRATOR", "none"} and not str(s.get("narration_text", "")).strip()]
+            if missing_narration:
+                project["scenes"] = []
+                raise ValueError(f"Narration text is required for every non-character scene; missing scenes: {', '.join(missing_narration)}")
+        retrying(attempts, scenes)
+    progress("scenes", len(project["scenes"]))
+    save(path, project)
+
+
 def generate(project_id: str, model: str | None = None, title: str | None = None, concept: str | None = None):
     client = ScriptClient(model=model)
     path = PROJECTS_ROOT / project_id / "pipeline.json"
@@ -165,41 +228,14 @@ def generate(project_id: str, model: str | None = None, title: str | None = None
                              monster="प्रेत-आत्मा", raw_text=raw, raw_output=raw)
     save(path, project)
 
-    schema = """Return ONLY JSON: {"characters":[{"tag":"@CHAR-01-NAME","name":"...","look_summary":"...","full_prompt":"...","voice_description":"..."}]}.
-All names/roles must come from the locked script. Never include a tag table as a character. Each full_prompt must be a complete 16:9 human-proportioned 2D reference-sheet prompt with exact face, clothes, age, and pose."""
-    raw = ask(client, render("characters", {"SCRIPT": raw}) + "\n" + schema, 3000)
-    project["characters"] = [{**c, "status": "pending", "error": None} for c in json_object(raw)["characters"]]
-    save_stage(path, project, "characters", raw)
-
-    bg_schema = """Return ONLY JSON: {"backgrounds":[{"tag":"#BGD-01-NAME","location_name":"...","look_summary":"...","full_prompt":"..."}]}.
-Every recurring location gets a wide and a close angle as separate tagged plates. All plates must be empty, 16:9, and in the locked 2D style."""
-    raw = ask(client, render("backgrounds", {"SCRIPT": project["script"]["raw_text"]}) + "\n" + bg_schema, 3000)
-    project["backgrounds"] = [{**b, "status": "pending", "error": None} for b in json_object(raw)["backgrounds"]]
-    save_stage(path, project, "backgrounds", raw)
-
-    compact_chars = [{"tag": c["tag"], "name": c["name"], "look_summary": c["look_summary"]} for c in project["characters"]]
-    compact_bgs = [{"tag": b["tag"], "location_name": b["location_name"], "look_summary": b["look_summary"]} for b in project["backgrounds"]]
-    scene_prompt = render("scenes", {"DURATION_MINUTES": 1, "MINIMUM_SCENES": 7, "SCENE_COUNT": 12,
-                                     "SCRIPT": project["script"]["raw_text"],
-                                     "CHARACTERS": json.dumps(compact_chars, ensure_ascii=False),
-                                     "BACKGROUNDS": json.dumps(compact_bgs, ensure_ascii=False)})
-    scene_schema = """Return ONLY JSON with {"scenes":[{"scene_number":1,"title":"...","background_tag":"#BGD-01-NAME","character_tags":["@CHAR-01-NAME"],"speaker":"NARRATOR|none|@CHAR-01-NAME","visual_action":"...","camera":"...","effects":"...","sound_design":"...","devanagari_dialogue":"...","narration_text":"..."}]}.
-Exactly 12 scenes in script order. Do not specify, request, or assume a fixed clip length: Flow must choose the natural length needed to complete the action and any dialogue. Use ONLY listed tags. Dialogue must be an exact line from the script; for narration, keep the exact line as metadata for later editing, not in the Flow animation prompt. For every NARRATOR or none scene, narration_text is mandatory: provide one concise Devanagari Hindi narration line consistent with the locked script, never blank. Do not invent character dialogue."""
-    raw = ask(client, scene_prompt + "\n" + scene_schema, 6000)
-    project["scenes"] = json_object(raw)["scenes"]
-    save_stage(path, project, "scenes", raw)
-    validate(project)
-    missing_narration = [str(s["scene_number"]) for s in project["scenes"] if s["speaker"] in {"NARRATOR", "none"} and not str(s.get("narration_text", "")).strip()]
-    if missing_narration:
-        raise ValueError(f"Narration text is required for every non-character scene; missing scenes: {', '.join(missing_narration)}")
-    save(path, project)
+    extract_plan(client, path, project)
     return path
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-id", default="youtube-automation-last-bus")
-    parser.add_argument("--model", default=None, help="Optional model override for the selected OpenAI or Groq provider.")
+    parser.add_argument("--model", default=None, help="Optional Groq model override.")
     parser.add_argument("--title", default=None, help="A supplied title skips idea selection and generates the locked 12-scene project.")
     parser.add_argument("--concept", default=None, help="Optional premise detail to guide the title-based story.")
     args = parser.parse_args()

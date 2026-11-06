@@ -57,11 +57,11 @@ const music=path.join(output,'background-music.mp3');
 try { if(!(await fs.stat(music)).size) throw new Error(); } catch { await script('freesound.ts',['--output',music]); }
 await script('mixNarration.ts',['--input-dir',output,'--narration-dir',path.join(output,'narration'),'--project',project,'--manifest',path.join(output,'narration-manifest.json'),'--bgm',music,'--output',path.join(output,'final-narrated.mp4')]);
 const final=path.join(output,'final.mp4');
-const intro=path.resolve(root,process.env.CHANNEL_INTRO_PATH || 'production/assets/channel-intro.mp4');
-const logo=path.resolve(root,process.env.CHANNEL_LOGO_PATH || 'production/assets/channel-logo.png');
+const intro=path.resolve(root,process.env.VIDEO_INTRO_PATH || process.env.CHANNEL_INTRO_PATH || 'production/assets/channel-intro.mp4');
+const logo=path.resolve(root,process.env.VIDEO_LOGO_PATH || process.env.CHANNEL_LOGO_PATH || 'production/assets/channel-logo.png');
 await script('addTitle.ts',['--input',path.join(output,'final-narrated.mp4'),'--output',final,'--project',project,'--title',title || completed.idea?.selected?.title || 'Hindi Folk Horror','--intro',intro,'--logo',logo,'--defer-approval']);
 await command('ffprobe',['-v','error','-show_entries','format=duration,size','-of','json',final]);
 const delivery={ video_path:final, project_file:project, edit_report:path.join(output,'final-narrated.mp4.edit-report.json'), status:'awaiting_approval', chat_markdown:`![Completed video](<${final.replace(/\\/g,'/')}>)`, question:'Is this video good enough to upload to YouTube?' };
 await fs.writeFile(path.join(output,'delivery.json'),JSON.stringify(delivery,null,2));
 console.log(JSON.stringify({ event:'video_ready', ...delivery },null,2));
-console.log('Codex: show chat_markdown in your response, then ask the approval question. The MP4 is already downloaded locally.');
+console.log('Review the video in the web app, or run: npm --prefix production run review -- prompt --project <pipeline.json>');

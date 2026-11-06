@@ -5,10 +5,50 @@
 > `node welcome.mjs` on Mac or Windows. It creates your private `.env` template and
 > tells you where to put those two file paths. See [WELCOME.md](WELCOME.md).
 
-This repository contains a two-half pipeline:
+This repository contains a two-half pipeline and a self-hosted web app:
 
-- `scripting/`: OpenAI-or-Groq API orchestration for idea -> script -> assets -> scenes -> publishing metadata.
+- `scripting/`: Groq API orchestration for idea -> script -> assets -> scenes -> publishing metadata, or for a finished script you supply.
 - `production/`: Playwright browser automation for Google Flow using a persistent Chrome profile.
+- `web/`: Next.js UI + Express API + MongoDB. Paste a script, watch progress live, answer browser prompts, preview the MP4 and approve the YouTube upload.
+
+## Web app: paste a script, approve the upload
+
+Requirements: Node 22.19+, Python 3.10+, MongoDB running locally (or any `MONGO_URL`), and an FFmpeg build with libass (the title render uses the `subtitles` filter). On macOS, Homebrew's default `ffmpeg` no longer includes libass; run `brew install ffmpeg-full`. The web backend uses `/opt/homebrew/opt/ffmpeg-full/bin` automatically, or set `FFMPEG_DIR`.
+
+```sh
+node welcome.mjs                                   # creates scripting/.env (never overwrites)
+python3 -m venv scripting/.venv && scripting/.venv/bin/python -m pip install -r scripting/requirements.txt
+npm --prefix production install
+npm --prefix web run setup                         # backend + frontend dependencies
+npm --prefix web run dev                           # UI http://localhost:3000, API http://localhost:4000
+```
+
+On Windows use `scripting\.venv\Scripts\python.exe`. For a long-running install, build once with `npm --prefix web run build` and run `npm --prefix web start`.
+
+Fill `scripting/.env` (`GROQ_API_KEY`, Freesound, channel logo/intro, optional `MONGO_URL`, and optional Zernio). The home page shows a setup checklist that never displays secret values. Then:
+
+1. **New video**: paste the finished script, a title and an optional concept. Choose the channel logo/intro from `.env`, or upload a logo (PNG/JPG) and intro (MP4, at least 5 s, with audio) for this video only. Per-video files are kept in the video's output folder and never replace the channel's copies. Optionally tick *check the 12-scene plan first* to approve Groq's scene split before Flow spends credits.
+2. **Progress**: Groq builds characters, backgrounds and exactly 12 scenes from your script (story generation is skipped), then the unchanged `start-video.mjs` workflow runs Flow, AI Studio narration, Freesound music, the speaker-aware mix and the intro/title/logo render. The page updates live over SSE.
+3. **Attention banner**: when the automation Chrome window needs you (Google sign-in or verification, or AI Studio's *Run* button), a banner says exactly what to do. The run continues by itself once you act.
+4. **Review**: watch the final MP4 and answer *Is this video good enough to upload to YouTube?* Approve uploads that exact file through Zernio with no second confirmation; Reject uploads nothing. Zernio is optional: without its settings, Approve only records your decision, and the video waits with an **Upload to YouTube** button that works once you add `ZERNIO_API_KEY` and `ZERNIO_YOUTUBE_ACCOUNT_ID`.
+
+Only one video runs at a time: Flow uses one signed-in browser profile and real credits, so further videos wait in a queue. **Stop** ends a run (including its Chrome window) with progress saved; **Resume** continues from `pipeline.json` and never resubmits finished or already-submitted Flow items. If the backend restarts mid-run, that video is marked stopped and waits for you to resume it.
+
+API (all JSON, under `/api`): `POST /videos` (multipart: `title`, `script`, `concept`, `assetMode=channel|video`, `logo`, `intro`, `pauseAfterScript`), `GET /videos`, `GET /videos/:id`, `GET /videos/:id/stream` (SSE: `job`, `history`, `event`), `GET /videos/:id/events`, `GET /videos/:id/file` (MP4 with range support), `POST /videos/:id/start | resume | cancel | approve | reject | upload`, `GET /system/status`. Jobs live in the Mongo `jobs` collection and their activity in `job_events`. The backend reads the pipeline's existing stdout (JSON events, narration messages, `video_ready`/`delivery.json`) rather than a separate logging system.
+
+The API and UI are meant for a trusted local machine or private network: there is no login yet. Jobs already record `ownerId` and `flowProfile`, and the queue runs one job per Flow profile, so multiple users or accounts can be added later. To use the UI from another device, set `WEB_ORIGIN` in `scripting/.env` and `NEXT_PUBLIC_API_URL` in `web/frontend/.env.local`, then rebuild.
+
+Tests: `npm --prefix web test` (backend; uses a throwaway local MongoDB database), `scripting/.venv/bin/python -m unittest discover -s scripting/tests -t scripting`, and `npm test` in `production`.
+
+## Command line: from a finished script
+
+```sh
+cd scripting
+.venv/bin/python -m pipeline.from_script --project-id my-video --script-file my-script.txt --title "आख़िरी बस"
+cd .. && node start-video.mjs --project scripting/projects/my-video/pipeline.json
+```
+
+`from_script` locks your text as the project's script, asks Groq only for characters, backgrounds and the 12 validated scenes, and prints JSON progress lines. Rerunning it with the same id and script resumes without new calls; a different script for an existing id is refused.
 
 ## Fastest local workflow: give one title
 
@@ -26,7 +66,7 @@ node start-video.mjs --title "Aakhri Local"
 
 Fill the existing local `scripting/.env` once. Python can be selected with `PYTHON`; the launcher automatically uses `scripting/.venv` when present. On Mac, the Python command is `python3`. The Node launcher uses argument arrays rather than shell strings and requires no PowerShell.
 
-The command generates the script, Flow assets and scene downloads, AI Studio narration downloads, music, the mixed story, and the intro/logo export. It saves `final.mp4` and `delivery.json` in the project's output folder, then records `awaiting_approval`. When running through Codex, the agent displays that MP4 in chat before asking for approval. A standalone terminal cannot attach files to a chat by itself. Login/Google verification may still require you to act in the browser.
+The command generates the script, Flow assets and scene downloads, AI Studio narration downloads, music, the mixed story, and the intro/logo export. It saves `final.mp4` and `delivery.json` in the project's output folder, then records `awaiting_approval`. The web app shows that MP4 and asks for approval; from a terminal run `npm --prefix production run review -- prompt --project <pipeline.json>`. Login/Google verification may still require you to act in the browser.
 
 Resume the existing Mac project with this command from the repository root (no new script or project is created):
 
@@ -36,15 +76,15 @@ node start-video.mjs --project scripting/projects/youtube-automation-aakhri-loca
 
 Install Python requirements once using your virtual environment's Python: `python3 -m pip install -r scripting/requirements.txt` (Windows: `python -m pip ...`). FFmpeg/ffprobe must be available in PATH. If Playwright's bundled browser is missing, installed Chrome is used; if neither browser exists, the matching Playwright Chromium is downloaded. Close only another window using the same automation profile if it is locked; the launcher does not kill browsers or delete profile locks.
 
-Flow submissions are saved before generating. On resume they are checked without submitting again; current media takes precedence over old queue text. Downloads target the matching new media card. If a prior locally modified runner submitted a scene without saving its reference, an agent must first identify that existing result in the connected browser. Blind regeneration is refused.
+Flow submissions are saved before generating. On resume they are checked without submitting again; current media takes precedence over old queue text. Downloads target the matching new media card. If a prior locally modified runner submitted a scene without saving its reference, first identify that existing result in the browser and recover it (see [operating rules](docs/operating-rules.md)). Blind regeneration is refused.
 
-Browser integration tests cover the failure cases against local fixtures. Real Google pages can change, and the Mac/Google session in the error report has not been available for a live end-to-end test here. If controls change, the saved result is retained and the failing Flow screenshot is saved locally in `flow-error.png` for the agent to inspect.
+Browser integration tests cover the failure cases against local fixtures. Real Google pages can change, and the Mac/Google session in the error report has not been available for a live end-to-end test here. If controls change, the saved result is retained and the failing Flow screenshot is saved locally in `flow-error.png` for inspection.
 
 Run `npm test` and `npm run typecheck` in `production` to verify locally. A Mac/Windows/Linux GitHub Actions template is saved at `docs/automation-tests.yml`; enabling it requires moving it to `.github/workflows` with GitHub workflow permission. It is not active automatically.
 
 ### Existing Windows launcher
 
-This is a local-only project. Nothing requires Railway or a cloud browser session. Copy `scripting/.env.example` to `scripting/.env`, add either your OpenAI or Groq key, ensure Chrome is logged into Google Flow, then run:
+This is a local-only project. Nothing requires Railway or a cloud browser session. Copy `scripting/.env.example` to `scripting/.env`, add your Groq key, ensure Chrome is logged into Google Flow, then run:
 
 ```powershell
 .\start-video.ps1 -Title "आख़िरी बस की तीसरी सीट" -Concept "बरसाती रात में तीसरी सीट पर बैठी प्रेत-आत्मा"
@@ -54,12 +94,7 @@ The launcher creates a fresh one-minute project with exactly 12 structured scene
 
 ### Writing-model selection
 
-The scripting stages (idea, story, characters, backgrounds, scenes, and publishing metadata) automatically choose the first available local key:
-
-1. `OPENAI_API_KEY` → OpenAI, default model `gpt-4.1-mini`.
-2. `GROQ_API_KEY` → Groq, default model `openai/gpt-oss-120b`.
-
-If both keys exist, OpenAI is used. Set `OPENAI_MODEL` or `GROQ_MODEL` in `scripting/.env` to override the default. Keys are never committed; `.env` is ignored by Git.
+Groq is the only writing-model provider for every scripting stage (idea, story, characters, backgrounds, scenes, and publishing metadata). Set `GROQ_API_KEY` in `scripting/.env`; the default model is `openai/gpt-oss-120b`, and `GROQ_MODEL` overrides it. A response cut off at the token limit is reported as an error instead of being parsed. Keys are never committed; `.env` is ignored by Git.
 
 The older PowerShell launcher prints narration and finishing commands for compatibility. Use `start-video.mjs` for automatic continuation through those stages. Character scenes retain their Flow audio. Narrator scenes use AI Studio audio with scene ambience/SFX beneath it.
 
@@ -87,7 +122,7 @@ cd scripting
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-$env:OPENAI_API_KEY = "your key" # or set GROQ_API_KEY instead
+$env:GROQ_API_KEY = "your key"
 python -m pipeline.cli new --project-id village-well --method B --concept "एक सूखे कुएँ में लौटती चूड़ैल" --ideas 5
 python -m pipeline.cli choose --project projects\village-well\pipeline.json --index 2
 python -m pipeline.cli run --project projects\village-well\pipeline.json --language Hindi --duration 8 --monster "चुड़ैल"
@@ -113,7 +148,7 @@ npx playwright install chrome
 npm run flow -- --project ..\scripting\projects\village-well\pipeline.json --user-data-dir .\chrome-profile --output-dir .\outputs
 ```
 
-The runner uses a persistent Chromium profile. On first use, complete Google login in the opened browser, then rerun. UI labels/selectors are centralized in `production/src/selectors.ts` and can be updated when Flow changes. It waits on DOM state and download events, not fixed render sleeps. The runner skips `done`, retries each `failed` item once, logs structured errors, and continues with later items.
+The runner uses a persistent Chromium profile. On first use, complete Google login in the opened browser, then rerun. UI labels/selectors are centralized in `production/src/selectors.ts` and can be updated when Flow changes. It waits on DOM state and download events, not fixed render sleeps. It drives Flow's current agent composer and waits up to 30 seconds for it; if the composer never appears (for example behind a sign-in or welcome dialog), the run stops before submitting anything. The older classic-editor path runs only with `FLOW_CLASSIC_UI=1`. Flow's agent cannot create characters, so after the character images the runner saves each one in Flow's **Characters** section under its tag (for example `@CHAR-02-DRIVER`), with a built-in Flow voice chosen from its description and its look and voice notes as character info; a character that already exists with that name is reused, never duplicated. Each scene then attaches its characters and its background image as prompt ingredients before it is submitted; if any of them is missing, that scene is not submitted. Results are tracked by Flow's media ID, because Flow's image addresses change over time. Each scene clip is taken from Flow's chat reply to that scene's own request (never from other media on the page), opened in Flow's editor to record its ID, and downloaded with **Download media → Original size**; the upscaled options are never chosen. If Flow answers a request with an error card, that scene is submitted once more automatically. Set Flow's output count to 1x in the composer's settings: the default 2x doubles credits, and two results arriving at the same moment are refused as ambiguous. The runner skips `done`, retries each `failed` item once, logs structured errors, and continues with later items.
 
 The runner watches current media for up to 30 minutes after a saved submission, even when the chat contains an old high-demand message. It does not submit a duplicate request on resume. Set `FLOW_QUEUE_WAIT_MINUTES` to a value from 1 to 120 for a different wait period. If there is still no matching result, the item stays `pending` for resume. A run interrupted exactly during submission is flagged for inspection rather than guessed or resubmitted.
 
@@ -158,7 +193,7 @@ The music downloader saves a license record beside the downloaded file. Final FF
 ### First-run setup and approval uploads
 
 Requires Node.js 22+, Python, FFmpeg and the existing production dependencies.
-Copy `scripting/.env.example` to `scripting/.env` once, then fill in your values there. This single file holds writing-model keys, music credentials, Zernio upload settings and logo/intro file paths. Never overwrite an existing `.env` containing credentials.
+Copy `scripting/.env.example` to `scripting/.env` once, then fill in your values there. This single file holds writing-model keys, music credentials, optional Zernio upload settings and logo/intro file paths. Zernio is optional: leave both Zernio values empty to produce and review videos without uploading, and upload approved videos once you add them. Never overwrite an existing `.env` containing credentials.
 
 ```dotenv
 ZERNIO_API_KEY=your_zernio_key
@@ -174,16 +209,18 @@ Run `npm install` then `npm run setup` from `production` to validate settings an
 
 The existing Flow and Google AI Studio narration workflow remains in place. The final `add-title --project ...` command renders the intro and logo, records the exact video hash, and in an interactive terminal asks one question: **Is this video good enough to upload to YouTube?** It shows the video path, account and visibility. Yes uploads the local MP4 through Zernio immediately; no records rejection without uploading. No second publishing confirmation is needed.
 
-For an agent or noninteractive run, use:
+For a noninteractive run (the web app's Approve and Reject buttons call the same commands), use:
 
 ```powershell
 npm run review -- prompt --project <pipeline.json>
 # Or record the user's explicit decision:
 npm run review -- approve --project <pipeline.json>
 npm run review -- reject --project <pipeline.json>
+# Upload an approved video later, once Zernio is configured:
+npm run review -- upload --project <pipeline.json>
 ```
 
-Approval is tied to the rendered file hash. Modified videos require a fresh review. Concurrent uploads are locked. Once a post request starts, repeat submissions are blocked even if the network response is lost; check the Zernio dashboard to reconcile before taking further action. A stale `.upload.lock` after a process crash must be inspected before manual removal. Pre-submission failures can be retried with `npm run review -- retry --project <pipeline.json>`.
+Approval is tied to the rendered file hash. Modified videos require a fresh review. Concurrent uploads are locked. Once a post request starts, repeat submissions are blocked even if the network response is lost; check the Zernio dashboard to reconcile before taking further action. A stale `.upload.lock` after a process crash must be inspected before manual removal. Pre-submission failures can be retried with `npm run review -- upload --project <pipeline.json>` (`retry` is an alias).
 
 A submitted post is not reported as published until Zernio returns a published platform status. Pending submissions can be followed in the Zernio dashboard. `review status` shows the locally recorded response, not a live poll.
 
@@ -193,16 +230,12 @@ Validation: `npm run typecheck` and `npm test` in `production`. Tests mock all n
 
 ### Welcome message for new users
 
-When a student opens the clone in Codex and says **`onboarding`**, AGENTS.md instructs it to say:
+`node welcome.mjs` creates `scripting/.env` from the template and asks for exactly two assets:
 
 > Welcome to YouTube Automation! Please provide your channel logo image (PNG or JPG) and intro video (MP4, at least 5 seconds long, with audio).
 
-All other settings come from `scripting/.env`. `npm run setup` creates this file if missing, preserves existing values, and shows the same asset-only welcome when configuration is incomplete. Git clone alone cannot execute a message.
+All other settings come from `scripting/.env`. `npm run setup` in `production` creates this file if missing, preserves existing values, and shows the same asset-only welcome when configuration is incomplete. Git clone alone cannot execute a message.
 
-### Get Freesound credentials with your connected browser
+### Freesound credentials
 
-Ask your Codex agent: “Use my connected Chrome browser to get my Freesound client ID, client secret and refresh token, and save them in my local .env.” You may also provide a specific Google Sheet link containing existing credentials. The agent follows [the onboarding workflow](docs/freesound-onboarding.md), completes the authorized browser steps, then validates using `npm run freesound -- --auth-only`. Login or consent may require your interaction. This workflow requires the connected agent, not just Node.js.
-
-You can also say **“get all the attention”** during Freesound setup. The agent will complete routine steps without repeating approval questions. It pauses only if Freesound requires you to accept its API terms or confirm creation of persistent API credentials.
-
-No credentials appear in the welcome message. Refresh tokens are saved after rotation; temporary authorization codes are removed after successful exchange.
+Follow [the Freesound setup steps](docs/freesound-onboarding.md) to register an API app, authorize it once and save `FREESOUND_CLIENT_ID`, `FREESOUND_CLIENT_SECRET` and `FREESOUND_REFRESH_TOKEN` in `scripting/.env`. Validate with `npm run freesound -- --auth-only` in `production`. Refresh tokens are saved after rotation; temporary authorization codes are removed after a successful exchange. Never share these values.
